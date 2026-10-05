@@ -1,6 +1,6 @@
 # 公開準備と運用手順
 
-更新日: 2026-10-05。GitHub Actionsから初回デプロイ済み。APIは停止状態。
+更新日: 2026-10-05。GitHub Actionsから本番有効化を反映済み。APIは有効状態。
 
 初期運用は、送信者を限定したCLI向けの試用とする。匿名投稿サービスや一般向けの
 共有画面は対象にしない。OSの保守はCloudflareに委ねるが、アプリの更新、利用量、
@@ -18,10 +18,11 @@
   `PRODUCTION_DEPLOY_ENABLED=false`で継続デプロイは停止中。
 - `CLOUDFLARE_API_TOKEN`は本人が作成・登録済み。Secret名と登録日時だけを確認した。
   `PUBLISH_TOKEN`は本人がSecretとして登録済み。WranglerのSecret一覧で
-  名前と`secret_text`の種別だけを確認した。APIは引き続き停止503を確認済み。
+  名前と`secret_text`の種別だけを確認した。登録時のAPIは停止503を確認した。
   ただし、通常変数として登録した旧バージョンには`plain_text`のバインディングが
-  残ることを種別だけで確認した。公開前に新しい乱数トークンへ交換する。
-  パスワードアプリと現在のWorker Secretを更新し、旧値を再利用しない。
+  残ることを種別だけで確認した。本人から新しい乱数トークンへ交換し、
+  パスワードアプリと現在のWorker Secretを更新したとの報告を受けた。
+  新旧の値は読み取らず、旧値を再利用しない。
 - mainはPRとGitHub Actionsの`verify`成功を必須とし、管理者の迂回、強制Push、
   ブランチ削除を禁止した。1人運用のためPRの第三者レビュー人数は0とし、
   本番への反映は`production`環境で本人が承認する。
@@ -44,12 +45,23 @@
   Worker応答の`no-store`、`no-referrer`、`nosniff`も確認した。
   D1の集計SQLでレコード数0を確認したが、WorkerからのD1操作試験とは別の証拠である。
 
-送信認証・一回取得・期限境界・Cron掃除の本番試験は未実施。
-有効状態への設定変更を経てダミーデータで確認する。
-この変更では本番設定を`SERVICE_ENABLED=true`にするが、稼働中のWorkerは停止状態。
-mainへマージしただけでは反映されない。本人の公開承認後に、mainの手動実行で
-`deploy_once=true`を指定し、`production`環境の承認を経て一度だけ反映する。
-`PRODUCTION_DEPLOY_ENABLED=false`は維持し、継続デプロイを有効にしない。
+PR #2のマージコミット`f217da0a749cab83c4d29044f1404840b1a9a220`を、本人の
+`production`承認後に`deploy_once=true`の手動実行で反映した。
+[有効化の実行](https://github.com/mt4110/veil-vault/actions/runs/37286941853)は成功。
+配置バージョンは`d4e8df5c-ac3d-4937-bc49-b76291a8f160`、
+`SERVICE_ENABLED=true`、専用D1のID、`PUBLISH_TOKEN`の`secret_text`種別を確認した。
+毎時Cronもデプロイログで確認した。
+`PRODUCTION_DEPLOY_ENABLED=false`は維持し、継続デプロイは停止中。
+
+本番HTTP試験で認証なしPOSTの401、HEADの405・本文なし、存在しないIDのGETの404、
+応答の`no-store`・`no-referrer`・`nosniff`を確認した。
+本番D1へ直接投入したダミーレコードで、HEAD後のGET成功、再GETの404、
+4並行取得の200が1件・404が3件、24時間期限境界の404、取得後の該当行数0を確認した。
+WAFは有効のまま。これらは正しいトークンでのPOSTを経由した試験ではない。
+認証付きPOSTからの一連の試験は`tests/production_api.py`で本人が非表示入力して行う。
+トークン・取得ID・レスポンス本文を結果ファイルへ保存しない。
+Cron確認用の期限切れダミーを1件だけ残した。2026-10-05 19:00 JSTの予定実行後に、
+そのダミー行が消えたことを確認するまでCron掃除成功は未確認とする。
 
 ## ローカルと本番の境界
 

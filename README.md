@@ -5,6 +5,51 @@ Cloudflare Workers + D1で動く、一回取得型の暗号文共有APIの初期
 `DELETE … RETURNING`文でD1の現在のテーブルからレコードを削除します。
 同じレコードの暗号文を取得できるリクエストは最大1つです。
 
+## アーキテクチャ
+
+```mermaid
+flowchart LR
+  subgraph trusted[人A・人Bが操作するクライアント]
+    sender["👤 人A: トークンデータを渡したい人<br/>自分の端末で暗号化"]
+    receiver["👤 人B: トークンデータを受け取りたい人<br/>自分の端末で復号"]
+    sender -. 復号キーを別経路で共有 .-> receiver
+  end
+
+  subgraph cloudflare[Cloudflare edge]
+    worker["veil-vault Worker<br/>送信認証・API"]
+    d1[("D1<br/>暗号文・UUID・作成時刻")]
+    cron["毎時 Cron<br/>期限切れを掃除"]
+    worker -->|POST: INSERT| d1
+    d1 -->|GET: DELETE RETURNING<br/>原子的に取得・削除| worker
+    cron -->|期限切れ行を削除| d1
+  end
+
+  sender -->|HTTPS POST<br/>暗号文 + PUBLISH_TOKEN| worker
+  worker -->|201: UUID| sender
+  receiver -->|HTTPS GET<br/>UUIDが取得権限| worker
+  worker -->|暗号文を一度だけ返す| receiver
+```
+
+## 活用事例
+
+### 業務委託先へAPIトークンを渡す
+
+1. **送信側:** 渡したいAPIトークン（例: `CLOUD_API_TOKEN`）を、受信者へ別経路で
+   共有する復号キーでローカル暗号化します。
+2. **登録:** 暗号文を`POST /api/secrets`へ送り、`201`で返されたUUIDを受け取ります。
+   このリクエストには、送信権限を示す`PUBLISH_TOKEN`も付けます。
+3. **受け渡し:** UUIDと復号キーを、互いに別の安全な経路で受信者へ伝えます。
+4. **受信側:** `GET /api/secrets/:id`を一度実行します。暗号文はD1からアトミックに
+   削除されてから返り、受信側の端末で復号するとAPIトークンが得られます。
+
+**`PUBLISH_TOKEN`はveil-vaultへ送信する人の認証用です。渡したい`CLOUD_API_TOKEN`とは
+別の値です。** APIへPOSTする内容は暗号文に限り、APIトークンや復号キーそのものは送りません。
+このAPI自体は暗号化・復号を実装しません。信頼するクライアントが暗号処理を行う必要があり、
+`veil-env`との暗号文・鍵の互換性はまだ接続確認していません。
+
+受信GETは消費操作です。最大1件のリクエストだけが暗号文を受け取れますが、受信側の
+復号完了や通信切断時の再取得は保証しません。UUIDと復号キーは別経路で伝えてください。
+
 ## API
 
 | エンドポイント | 入力 | 成功時 |
@@ -53,17 +98,8 @@ Time Travelの履歴からの完全消去は保証しません。
 
 ## E2EEとの接続
 
-```text
-送信クライアント: 平文 + 復号キー → 認証付き暗号化
-                         │ 暗号文だけをPOST
-                         ▼
-                 veil-vault / D1
-                         │ GETでアトミックに削除・取得
-                         ▼
-受信クライアント: 暗号文 + 別途共有された復号キー → 復号
-```
-
-共有リンクを設計する場合、復号キーは`#key=...`のようなURLフラグメントに置き、
+上図の通り、送信側で暗号化し、受信側で復号します。共有リンクを設計する場合、
+復号キーは`#key=...`のようなURLフラグメントに置き、
 送信前にクライアントが分離します。HTTPではフラグメントがサーバーへ送られません。
 CLIでもURL全体を本文・ヘッダー・ログへ転記しないことが必要です。
 このAPI自体はリンク生成、鍵生成、暗号化・復号、`veil-env`との接続を実装しません。
@@ -75,7 +111,7 @@ UUIDは取得・消費の権限を持つBearer IDです。IDを知る者は復�
 POSTは送信者を限定するBearer認証を使います。32バイトの暗号学的な乱数を
 64文字の小文字hexにした送信認証トークンを、Worker secretの`PUBLISH_TOKEN`へ保存します。
 初期の少人数試用向けの共有トークンで、利用者別の失効・保存量制限は未実装です。
-WAFレート制限と本番アカウントの監視は公開前に設定・確認します。
+WAFのレート制限は有効です。利用量・エラーの監視と通知設定は運用手順に従って確認します。
 アプリケーションは本文、キー、ID、D1例外の詳細をログへ出しません。
 Cloudflare側のアクセスログや、前段プロキシ・外部監視の記録は別途確認が必要です。
 
@@ -137,12 +173,10 @@ Workers側の制限も含め、利用量と最新料金を確認してくださ�
 [D1料金](https://developers.cloudflare.com/d1/platform/pricing/)、
 [Workers料金](https://developers.cloudflare.com/workers/platform/pricing/)を参照してください。
 
-`wrangler.toml`はローカル用です。本番は`wrangler.production.toml`に分離し、
-`api.veil-s.com`のCustom Domain設定を含めています。両方とも初期状態はAPI停止です。
-DB IDは仮のため、本番デプロイの事前検証で拒否されます。
-GitHub Actionsはmainの検証後にデプロイする構成ですが、
-`PRODUCTION_DEPLOY_ENABLED=true`の明示的な有効化まではデプロイしません。
-リモートDB作成・スキーマ適用、トークン登録、DNS/Custom Domain変更、デプロイは未実施です。
+`wrangler.toml`はローカル用で、初期状態は停止です。本番は
+`wrangler.production.toml`へ分離し、`api.veil-s.com`、専用D1、毎時Cronを設定しています。
+本番Workerは2026-10-05に有効化し、継続デプロイは停止中です。変更はGitHubの承認を経て
+手動実行で反映します。現在の本番検証状況は[運用手順](docs/OPERATIONS.md)を参照してください。
 
 公開の順序と停止・復旧は[運用手順](docs/OPERATIONS.md)、
 保証の範囲と未対応の脅威は[セキュリティモデル](docs/SECURITY_MODEL.md)を参照してください。
