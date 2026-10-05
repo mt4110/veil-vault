@@ -1,5 +1,6 @@
 """Fail deployment preflight before any Cloudflare mutation. Never reads secrets."""
 
+import argparse
 from pathlib import Path
 import sys
 import tomllib
@@ -8,7 +9,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def validate(config):
+def validate(config, *, require_closed=False):
     errors = []
     if config.get("name") != "veil-vault":
         errors.append("unexpected Worker name")
@@ -30,6 +31,8 @@ def validate(config):
     variables = config.get("vars", {})
     if variables.get("SERVICE_ENABLED") not in ("true", "false"):
         errors.append("SERVICE_ENABLED must be explicitly true or false")
+    if require_closed and variables.get("SERVICE_ENABLED") != "false":
+        errors.append("one-time closed deployment requires SERVICE_ENABLED=false")
     if "PUBLISH_TOKEN" in variables:
         errors.append("PUBLISH_TOKEN must be a Worker secret, never a config variable")
     if config.get("triggers", {}).get("crons") != ["0 * * * *"]:
@@ -40,9 +43,12 @@ def validate(config):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--require-closed", action="store_true")
+    args = parser.parse_args()
     with (ROOT / "wrangler.production.toml").open("rb") as source:
         config = tomllib.load(source)
-    errors = validate(config)
+    errors = validate(config, require_closed=args.require_closed)
     if errors:
         for error in errors:
             print("Deployment blocked: " + error, file=sys.stderr)

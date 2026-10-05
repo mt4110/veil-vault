@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      deploy_closed:
+        description: Deploy once with SERVICE_ENABLED=false
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -17,8 +23,11 @@ jobs:
     uses: ./.github/workflows/ci.yml
   deploy:
     needs: verify
-    # Default is off. Enabling this repository variable authorizes ongoing deployment.
-    if: github.ref == 'refs/heads/main' && vars.PRODUCTION_DEPLOY_ENABLED == 'true'
+    # The manual closed deploy does not enable ongoing deployment on main updates.
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (vars.PRODUCTION_DEPLOY_ENABLED == 'true' ||
+       (github.event_name == 'workflow_dispatch' && inputs.deploy_closed))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: production
@@ -31,6 +40,9 @@ jobs:
           node-version: "24"
       - name: Production config preflight
         run: python3 scripts/check_deploy.py
+      - name: Enforce closed service for one-time deployment
+        if: github.event_name == 'workflow_dispatch' && inputs.deploy_closed
+        run: python3 scripts/check_deploy.py --require-closed
       - name: Install pinned build tool
         run: |
           rustup show

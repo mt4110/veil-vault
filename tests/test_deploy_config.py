@@ -34,6 +34,12 @@ class DeploymentGateTests(unittest.TestCase):
                 config[key] = value
                 self.assertTrue(validate(config))
 
+    def test_one_time_deploy_cannot_enable_service(self):
+        self.assertEqual(validate(self.config, require_closed=True), [])
+        self.config["vars"]["SERVICE_ENABLED"] = "true"
+        self.assertTrue(validate(self.config, require_closed=True))
+        self.assertEqual(validate(self.config), [])
+
     def test_placeholder_and_malformed_database_ids(self):
         for identifier in ("00000000-0000-0000-0000-000000000000", "not-a-uuid", None):
             self.config["d1_databases"][0]["database_id"] = identifier

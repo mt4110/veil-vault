@@ -20,8 +20,8 @@ custom_domain = true
 [[d1_databases]]
 binding = "DB"
 database_name = "veil-vault"
-# The deployment preflight rejects this placeholder.
-database_id = "00000000-0000-0000-0000-000000000000"
+# Dedicated production D1 database; schema.sql was applied remotely.
+database_id = "eb7928f6-0942-4d02-827d-062e21349b0f"
 
 [triggers]
 crons = ["0 * * * *"]

@@ -1,10 +1,28 @@
 # 公開準備と運用手順
 
-更新日: 2026-10-05。リモート操作・自動デプロイの有効化は未実施。
+更新日: 2026-10-05。専用D1とGitHub環境を準備済み。Workerのデプロイは未実施。
 
 初期運用は、送信者を限定したCLI向けの試用とする。匿名投稿サービスや一般向けの
 共有画面は対象にしない。OSの保守はCloudflareに委ねるが、アプリの更新、利用量、
 乱用、秘密の管理、障害対応は運用者が引き受ける。
+
+## 現在の準備状況
+
+- D1 `veil-vault`を作成し、空DBへ`schema.sql`を適用済み。テーブルとインデックスを
+  リモートで確認し、本番設定へDB IDを反映した。
+- `veil-s.com`のNSとSOAはCloudflareへ委任済み。DNSレコードは0件で、
+  `api.veil-s.com`のCustom Domainは未作成。
+- GitHub `production`環境はmainブランチのみ許可し、`mt4110`の承認を必須にした。
+  1人で運用するため本人による承認を許可するが、管理者による承認の迂回は無効。
+- 環境Secret `CLOUDFLARE_ACCOUNT_ID`は登録済み。リポジトリVariable
+  `PRODUCTION_DEPLOY_ENABLED=false`で継続デプロイは停止中。
+- `CLOUDFLARE_API_TOKEN`は本人が作成・登録済み。Secret名と登録日時だけを確認した。
+  Workerが未作成なので`PUBLISH_TOKEN`は初回の停止状態デプロイ後に登録する。
+- WAFの`veil-vault-api-rate-limit`は有効。`/api/secrets`配下をIP単位で
+  5回/10秒、超過時は10秒Blockとした。実サービスでの応答確認は初回デプロイ後に行う。
+- WAFの`veil-vault-require-https`は有効。`api.veil-s.com`への平文HTTPをBlockする。
+- Zoneの最低TLSを1.2に設定。TLS 1.3は有効で、Universal SSLはActive。
+  Custom Domain作成後の実際のTLS接続は未確認。
 
 ## ローカルと本番の境界
 
@@ -34,14 +52,19 @@
    必要な承認ルールを設定する。環境の保護機能はリポジトリ公開範囲とGitHubプランに
    依存するため、環境を作っただけで承認が強制されると考えない。
 4. その環境のSecretsへ`CLOUDFLARE_API_TOKEN`と`CLOUDFLARE_ACCOUNT_ID`を登録する。
-   トークンは対象アカウント・Zoneに絞る。Worker Scripts Edit、必要なD1アクセス、
-   Custom Domain設定に必要な権限を現在のWranglerの要求と照合する。
+   トークンは対象アカウント・Zoneに絞る。新規Worker作成にはWorkers Adminが必要で、
+   初回用トークンは7日で失効する設定を候補とする。初回後はWorkers Editorへ権限を
+   縮小する。Custom Domain設定には`veil-s.com`限定のWorkers Routes Writeが必要。
+   バインディングをデプロイするだけならD1を直接操作する権限は不要。
+   アカウント範囲のWorkers権限は他のWorkerにも及ぶため、作成前に影響を確認する。
    Global API Keyは使わない。WAF設定用の権限をデプロイトークンに足さない。
    Cloudflare/GitHubの管理アカウントは多要素認証と回復手段を確保する。
 5. 本番設定が閉じた状態で`python3 scripts/check_deploy.py`を実行する。
-   対象DB・ホスト・Cronの差分をレビューし、初回デプロイの承認後にのみリポジトリ
-   Variable `PRODUCTION_DEPLOY_ENABLED=true`を設定する。この設定は以降のmain更新を
-   自動デプロイする権限の有効化でもある。main以外の手動実行はデプロイしない。
+   対象DB・ホスト・Cronの差分をレビューし、初回デプロイ承認後、mainの手動実行で
+   `deploy_closed=true`を指定する。`--require-closed`が有効状態の設定を拒否する。
+   継続デプロイのVariableはfalseのままでよい。main以外の手動実行はデプロイしない。
+   継続運用を別途承認した後だけ`PRODUCTION_DEPLOY_ENABLED=true`にする。
+   以降のmain更新でも`production`環境の承認は必要になる。
 6. 初回はAPIが503のままデプロイする。Custom DomainはDNSと証明書の変更を伴う。
    HTTPS接続、未公開のworkers.dev/preview URL、Cron登録、D1バインディングを確認する。
 7. Worker secretの`PUBLISH_TOKEN`を安全な入力経路で登録し、WAFと監視を準備する。
@@ -81,7 +104,8 @@ CIに本番Secretsを渡さず、デプロイJobのWrangler Actionにだけ渡�
 式はPathとVerified Botに限定され、HostやMethodで絞れない。
 そのため「apiホストのPOSTのみ、5回/10秒」はFreeでそのまま設定できない。
 
-初期試用の候補は次のPath式、5回/10秒、Block、緩和10秒とする。
+初期試用では次のPath式、5回/10秒、Block、緩和10秒を適用済み。
+ルールIDは`b26a77613a84402d9640db3b1118bf54`。
 値は実利用前にCLIの正常な操作頻度と共有IPへの影響を確認して調整する。
 
 ```text
@@ -97,6 +121,23 @@ WorkerのJSON形式や応答ヘッダーと同じとは限らない。
 厳密には制限しない。分散IP、トークン漏えい、同じIPの複数利用者を考慮する。
 Workerの起動やD1利用量がゼロになる保証でもない。Freeの上限到達はサービス停止に
 つながり、Paidでは追加料金があり得る。料金プランを自動変更しない。
+
+## HTTPS
+
+カスタムルール`veil-vault-require-https`で、次の条件に一致する通信をBlockする。
+ルールIDは`bff7e7c9b886498d96cb66e33ed33616`。
+
+```text
+(http.host eq "api.veil-s.com" and not ssl)
+```
+
+このルールはHTTPで受信してから遮断するため、平文通信に含めたトークンやIDの
+盗聴を防げない。クライアントは最初のリクエストからHTTPSを使い、証明書を検証する。
+サービスの疎通試験でもHTTPに秘密や実際の取得IDを送らない。
+
+`veil-s.com`の最低TLSは1.2、TLS 1.3は有効。最低TLSの設定はZone全体へ及ぶ。
+Universal SSLのActive表示だけではAPIのDNS・証明書・Worker経路の疎通を証明しない。
+Custom Domain作成後に`api.veil-s.com`でTLS 1.2/1.3とHTTP遮断を確認する。
 
 ## 掃除と監視
 
@@ -145,6 +186,7 @@ WorkerのロールバックはDBを巻き戻さない。DBを削除前へ復元�
 - [CloudflareのGitHub Actions](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)
 - [APIトークン権限](https://developers.cloudflare.com/fundamentals/api/reference/permissions/)
 - [Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
+- [Workersの権限とバインディングのアクセス](https://developers.cloudflare.com/workers/authorization/workers/)
 - [D1料金とFree上限到達時の動作](https://developers.cloudflare.com/d1/platform/pricing/)
 - [Worker集計メトリクス](https://developers.cloudflare.com/workers/observability/metrics-and-analytics/)
 - [GitHubのActionsセキュリティ](https://docs.github.com/en/actions/reference/security/secure-use)
