@@ -17,7 +17,11 @@
 - 環境Secret `CLOUDFLARE_ACCOUNT_ID`は登録済み。リポジトリVariable
   `PRODUCTION_DEPLOY_ENABLED=false`で継続デプロイは停止中。
 - `CLOUDFLARE_API_TOKEN`は本人が作成・登録済み。Secret名と登録日時だけを確認した。
-  `PUBLISH_TOKEN`は未登録。
+  `PUBLISH_TOKEN`は本人がSecretとして登録済み。WranglerのSecret一覧で
+  名前と`secret_text`の種別だけを確認した。APIは引き続き停止503を確認済み。
+  ただし、通常変数として登録した旧バージョンには`plain_text`のバインディングが
+  残ることを種別だけで確認した。公開前に新しい乱数トークンへ交換する。
+  パスワードアプリと現在のWorker Secretを更新し、旧値を再利用しない。
 - mainはPRとGitHub Actionsの`verify`成功を必須とし、管理者の迂回、強制Push、
   ブランチ削除を禁止した。1人運用のためPRの第三者レビュー人数は0とし、
   本番への反映は`production`環境で本人が承認する。
@@ -28,7 +32,7 @@
   Wranglerで専用D1のバインディング、`SERVICE_ENABLED=false`、fetch/scheduledハンドラを
   確認。毎時Cronの登録をデプロイログで確認したが、実際の掃除成功は未確認。
 - WAFの`veil-vault-api-rate-limit`は有効。`/api/secrets`配下をIP単位で
-  5回/10秒、超過時は10秒Blockとした。実サービスでの応答確認は初回デプロイ後に行う。
+  5回/10秒、超過時は10秒Blockとした。初回デプロイ後の連続アクセスで429を確認済み。
 - WAFの`veil-vault-require-https`は有効。`api.veil-s.com`への平文HTTPをBlockする。
 - Zoneの最低TLSを1.2に設定。TLS 1.3は有効で、Universal SSLはActive。
   `api.veil-s.com`でTLS 1.2/1.3の接続と証明書検証が成功した。
@@ -41,7 +45,11 @@
   D1の集計SQLでレコード数0を確認したが、WorkerからのD1操作試験とは別の証拠である。
 
 送信認証・一回取得・期限境界・Cron掃除の本番試験は未実施。
-Worker secretの登録と、有効状態への設定変更を経てダミーデータで確認する。
+有効状態への設定変更を経てダミーデータで確認する。
+この変更では本番設定を`SERVICE_ENABLED=true`にするが、稼働中のWorkerは停止状態。
+mainへマージしただけでは反映されない。本人の公開承認後に、mainの手動実行で
+`deploy_once=true`を指定し、`production`環境の承認を経て一度だけ反映する。
+`PRODUCTION_DEPLOY_ENABLED=false`は維持し、継続デプロイを有効にしない。
 
 ## ローカルと本番の境界
 
@@ -88,8 +96,12 @@ Worker secretの登録と、有効状態への設定変更を経てダミーデ�
    HTTPS接続、未公開のworkers.dev/preview URL、Cron登録、D1バインディングを確認する。
 7. Worker secretの`PUBLISH_TOKEN`を安全な入力経路で登録し、WAFと監視を準備する。
    本番を有効化する変更（`SERVICE_ENABLED=true`）をレビューしてからデプロイする。
+   継続デプロイを無効のまま反映する場合はmainで`deploy_once=true`を指定する。
+   この入力はmainの設定をそのまま反映するため、有効化も停止もできる。
+   `deploy_closed=true`の停止状態チェックと`production`環境の本人承認は維持する。
 8. ダミー暗号文だけで認証拒否、送信→取得→再取得404、HEAD非消費、停止503を確認する。
-   リモートでの24並行取得、期限境界とCron動作は専用検証データで別途確認する。
+   本番ではWAFを維持したまま4並行取得を確認する。24並行取得はローカル試験の証拠とする。
+   期限境界とCron動作は専用のダミー検証データで別途確認する。
    `veil-env`との実際の暗号文・鍵の互換性が未確認なら実シークレットを投入しない。
 
 自動デプロイはClippyだけでなく、Wasmビルド、認証・停止・入力・並行取得・GC・D1障害
@@ -116,6 +128,11 @@ CIに本番Secretsを渡さず、デプロイJobのWrangler Actionにだけ渡�
 値の展開を避ける。Worker secretの登録はダッシュボードの秘密入力、または権限600の
 一時ファイルからWranglerの標準入力を使う。ローカルの`.dev.vars`も秘密を含むので
 コミットしない。登録したトークンを含むファイルの削除は対象を確認して承認後に行う。
+
+通常変数に入れてしまった値は、現在の設定をSecretへ変更しても過去のWorker
+バージョンに残り得る。公開前に別の乱数値へ交換する。旧バージョンへのロールバックは
+古い値と保存方式を復元し得るため行わず、Secretを使う設定から新しい停止バージョンを
+デプロイする。Secret登録の確認は名前と種別のみで行い、値を取得・表示しない。
 
 ## WAFレート制限
 

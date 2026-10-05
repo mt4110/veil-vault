@@ -10,6 +10,11 @@ on:
         type: boolean
         required: false
         default: false
+      deploy_once:
+        description: Deploy the reviewed main configuration once (may enable the API)
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -23,11 +28,12 @@ jobs:
     uses: ./.github/workflows/ci.yml
   deploy:
     needs: verify
-    # The manual closed deploy does not enable ongoing deployment on main updates.
+    # Manual inputs never change the gate for deployment on future main updates.
     if: >-
       github.ref == 'refs/heads/main' &&
       (vars.PRODUCTION_DEPLOY_ENABLED == 'true' ||
-       (github.event_name == 'workflow_dispatch' && inputs.deploy_closed))
+       (github.event_name == 'workflow_dispatch' &&
+        (inputs.deploy_closed || inputs.deploy_once)))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: production

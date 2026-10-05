@@ -10,8 +10,8 @@ send_metrics = false
 command = "worker-build --release"
 
 [vars]
-# First deploy stays closed. Enable only after provisioning secrets, schema and WAF.
-SERVICE_ENABLED = "false"
+# Activation candidate: deploy only after approval; secrets, schema and WAF are provisioned.
+SERVICE_ENABLED = "true"
 
 [[routes]]
 pattern = "api.veil-s.com"
