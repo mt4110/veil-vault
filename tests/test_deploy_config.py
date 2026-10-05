@@ -14,6 +14,8 @@ class DeploymentGateTests(unittest.TestCase):
     def setUp(self):
         self.config = tomllib.loads((ROOT / "wrangler.production.toml").read_text())
         self.config["d1_databases"][0]["database_id"] = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa"
+        # Exercise both states regardless of the reviewed production configuration.
+        self.config["vars"]["SERVICE_ENABLED"] = "false"
 
     def test_valid_closed_and_enabled_config(self):
         self.assertEqual(validate(self.config), [])
