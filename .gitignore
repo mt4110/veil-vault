@@ -1,0 +1,10 @@
+/target/
+/build/
+/.wrangler/
+/.local/
+__pycache__/
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+!.env.example
