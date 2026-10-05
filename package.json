@@ -1,0 +1,11 @@
+{
+  "name": "veil-vault-tooling",
+  "private": true,
+  "scripts": {
+    "test:local": "python3 tests/run_local.py",
+    "check:deploy": "python3 scripts/check_deploy.py"
+  },
+  "devDependencies": {
+    "wrangler": "4.147.0"
+  }
+}

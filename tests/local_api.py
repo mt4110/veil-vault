@@ -13,6 +13,8 @@ import subprocess
 import threading
 import uuid
 
+TEST_PUBLISH_TOKEN = "a" * 64  # Public test fixture, never a production credential.
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -33,10 +35,13 @@ def main():
         )
         return json.loads(result.stdout)[0]["results"]
 
-    def http(method, path, body=None, content_type="text/plain; charset=utf-8", chunked=False):
+    def http(method, path, body=None, content_type="text/plain; charset=utf-8", chunked=False,
+             authorization="Bearer " + TEST_PUBLISH_TOKEN):
         connection = http_client.HTTPConnection("127.0.0.1", args.port, timeout=15)
         try:
             headers = {"Content-Type": content_type} if body is not None else {}
+            if method == "POST" and authorization is not None:
+                headers["Authorization"] = authorization
             if chunked:
                 headers["Transfer-Encoding"] = "chunked"
                 body = iter([body[:32768], body[32768:]])
@@ -65,6 +70,14 @@ def main():
 
     # Verify the selected local DB is empty; never reuse a development/user DB.
     assert sql("SELECT count(*) AS n FROM secrets")[0]["n"] == 0, "Use a fresh test DB"
+
+    for authorization in (None, "Basic " + TEST_PUBLISH_TOKEN, "Bearer " + "b" * 64,
+                          "Bearer " + "a" * 63, "Bearer " + TEST_PUBLISH_TOKEN + " "):
+        response = http("POST", "/api/secrets", b"must-not-be-stored", authorization=authorization)
+        assert json.loads(expect(response, 401)) == {"error": "unauthorized"}
+        assert response[1].get("www-authenticate") == "Bearer"
+    assert sql("SELECT count(*) AS n FROM secrets")[0]["n"] == 0
+    print("PASS: missing/wrong publisher credentials cannot write to D1")
 
     payload = "dummy-日本語-ciphertext".encode()
     secret_id = create(payload)
@@ -114,6 +127,7 @@ def main():
     expect(http("GET", "/api/secrets/not-a-uuid"), 400)
     expect(http("GET", "/api/secrets/" + str(uuid.uuid4())), 404)
     expect(http("GET", "/api/secrets/00000000-0000-0000-0000-000000000000"), 400)
+    expect(http("GET", "/api/secrets/aaaaaaaa-aaaa-4aaa-0aaa-aaaaaaaaaaaa"), 400)
     expect(http("GET", "/api/secrets"), 405)
     expect(http("GET", "/missing"), 404)
     expect(http("POST", "/api/secrets", b"{}", "application/json"), 415)

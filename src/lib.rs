@@ -1,6 +1,7 @@
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use uuid::{Uuid, Version};
+use subtle::ConstantTimeEq;
+use uuid::{Uuid, Variant, Version};
 use worker::*;
 
 const MAX_PAYLOAD_BYTES: usize = 65_536;
@@ -43,10 +44,24 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 }
 
 async fn route(req: Request, env: Env) -> Result<Response> {
+    // Missing or unexpected configuration closes the API before touching D1.
+    if !matches!(
+        env.var("SERVICE_ENABLED")
+            .map(|value| value.to_string())
+            .as_deref(),
+        Ok("true")
+    ) {
+        return api_error(503, "service_unavailable");
+    }
     let path = req.path();
     if path == "/api/secrets" {
         return match req.method() {
-            Method::Post => create_secret(req, env).await,
+            Method::Post => {
+                if let Some(response) = authorize_publisher(&req, &env)? {
+                    return Ok(response);
+                }
+                create_secret(req, env).await
+            }
             _ => method_not_allowed("POST"),
         };
     }
@@ -62,7 +77,8 @@ async fn route(req: Request, env: Env) -> Result<Response> {
         let Ok(parsed) = Uuid::parse_str(id) else {
             return api_error(400, "invalid_id");
         };
-        if parsed.get_version() != Some(Version::Random)
+        if parsed.get_variant() != Variant::RFC4122
+            || parsed.get_version() != Some(Version::Random)
             || !parsed.hyphenated().to_string().eq_ignore_ascii_case(id)
         {
             return api_error(400, "invalid_id");
@@ -71,6 +87,37 @@ async fn route(req: Request, env: Env) -> Result<Response> {
     }
 
     api_error(404, "not_found")
+}
+
+fn authorize_publisher(req: &Request, env: &Env) -> Result<Option<Response>> {
+    let Ok(secret) = env.secret("PUBLISH_TOKEN") else {
+        return Ok(Some(api_error(503, "service_unavailable")?));
+    };
+    let expected = secret.to_string();
+    // Fixed public format: 32 cryptographically random bytes encoded as lowercase hex.
+    if !valid_publish_token(&expected) {
+        return Ok(Some(api_error(503, "service_unavailable")?));
+    }
+    let header = req.headers().get("Authorization")?.unwrap_or_default();
+    let supplied = header
+        .split_once(' ')
+        .and_then(|(scheme, token)| scheme.eq_ignore_ascii_case("Bearer").then_some(token));
+    let authorized = supplied.is_some_and(|token| {
+        valid_publish_token(token) && bool::from(expected.as_bytes().ct_eq(token.as_bytes()))
+    });
+    if authorized {
+        return Ok(None);
+    }
+    let mut response = api_error(401, "unauthorized")?;
+    response.headers_mut().set("WWW-Authenticate", "Bearer")?;
+    Ok(Some(response))
+}
+
+fn valid_publish_token(token: &str) -> bool {
+    token.len() == 64
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 async fn create_secret(mut req: Request, env: Env) -> Result<Response> {

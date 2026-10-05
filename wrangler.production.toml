@@ -1,0 +1,31 @@
+# Production-only configuration; it is never used by local test commands.
+name = "veil-vault"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-10-05"
+workers_dev = false
+preview_urls = false
+send_metrics = false
+
+[build]
+command = "worker-build --release"
+
+[vars]
+# First deploy stays closed. Enable only after provisioning secrets, schema and WAF.
+SERVICE_ENABLED = "false"
+
+[[routes]]
+pattern = "api.veil-s.com"
+custom_domain = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "veil-vault"
+# The deployment preflight rejects this placeholder.
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[triggers]
+crons = ["0 * * * *"]
+
+[observability]
+# Invocation logs can contain bearer IDs in request URLs. Use aggregate metrics first.
+enabled = false

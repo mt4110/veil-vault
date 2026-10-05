@@ -1,0 +1,46 @@
+name: Verify and deploy main
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: veil-vault-production
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+  deploy:
+    needs: verify
+    # Default is off. Enabling this repository variable authorizes ongoing deployment.
+    if: github.ref == 'refs/heads/main' && vars.PRODUCTION_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+      - name: Production config preflight
+        run: python3 scripts/check_deploy.py
+      - name: Install pinned build tool
+        run: |
+          rustup show
+          cargo install worker-build --version 0.8.7 --locked --root target/tools
+          echo "$PWD/target/tools/bin" >> "$GITHUB_PATH"
+      - name: Deploy approved configuration
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4.147.0"
+          packageManager: npm
+          command: deploy --config wrangler.production.toml

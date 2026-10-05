@@ -4,6 +4,11 @@ compatibility_date = "2026-10-05"
 # Keep public routes disabled until deployment has been reviewed.
 workers_dev = false
 preview_urls = false
+send_metrics = false
+
+[vars]
+# Deliberate opt-in, including in local development. PUBLISH_TOKEN is a Worker secret.
+SERVICE_ENABLED = "false"
 
 [build]
 command = "worker-build --release"

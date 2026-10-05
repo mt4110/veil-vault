@@ -9,7 +9,7 @@ Cloudflare Workers + D1で動く、一回取得型の暗号文共有APIの初期
 
 | エンドポイント | 入力 | 成功時 |
 | --- | --- | --- |
-| `POST /api/secrets` | `Content-Type: text/plain`、暗号文 | `201`、`{"id":"UUID-v4","expires_in_seconds":86400}` |
+| `POST /api/secrets` | `Authorization: Bearer …`、`Content-Type: text/plain`、暗号文 | `201`、`{"id":"UUID-v4","expires_in_seconds":86400}` |
 | `GET /api/secrets/:id` | UUID v4 | `200`、保存した暗号文（`text/plain; charset=utf-8`） |
 
 暗号文は空白だけではないUTF-8文字列とし、最大64 KiB（65,536バイト）です。
@@ -22,6 +22,9 @@ Cloudflare Workers + D1で動く、一回取得型の暗号文共有APIの初期
 - 不正なID・UTF-8・空の入力は`400`、サイズ超過は`413`、異なるメディア型は`415`です。
 - 対応外のメソッドは`405`です。`HEAD`と`OPTIONS`では消費しません。
 - D1の操作失敗は内部情報を含まない`500`です。取得処理の自動再試行はしません。
+- POSTの認証なし・不正は`401`です。送信認証トークンは復号キーとは別に管理します。
+- `SERVICE_ENABLED`が`true`以外または未設定ならAPIは`503`です。
+  POSTはWorker secretの`PUBLISH_TOKEN`が未設定・形式不正でも`503`になります。
 - すべてのAPI応答に`Cache-Control: no-store`を付け、Worker Cache APIは使用しません。
 
 `GET`には消費という副作用があります。リンクプレビュー、セキュリティスキャナー、
@@ -69,32 +72,38 @@ Webページ内のJavaScriptはフラグメントを読めるため、サーバ�
 クライアントの侵害に対する保護にはなりません。
 
 UUIDは取得・消費の権限を持つBearer IDです。IDを知る者は復号キーなしでも消費できます。
-認証、レート制限、利用者別の保存量制限は未実装です。
-公開前には不正利用・無料枠の消費への対策を別途設計する必要があります。
+POSTは送信者を限定するBearer認証を使います。32バイトの暗号学的な乱数を
+64文字の小文字hexにした送信認証トークンを、Worker secretの`PUBLISH_TOKEN`へ保存します。
+初期の少人数試用向けの共有トークンで、利用者別の失効・保存量制限は未実装です。
+WAFレート制限と本番アカウントの監視は公開前に設定・確認します。
 アプリケーションは本文、キー、ID、D1例外の詳細をログへ出しません。
 Cloudflare側のアクセスログや、前段プロキシ・外部監視の記録は別途確認が必要です。
 
 ## ローカル開発
 
-Rust 1.91以降、`wasm32-unknown-unknown`ターゲット、Node.js/npmが必要です。
+Rustは`rust-toolchain.toml`の1.95.0、`wasm32-unknown-unknown`、Node.js 24/npmを使用します。
 Worker SDKとビルドツールは`0.8.7`を使用します。
 Wranglerは`4.147.0`を使用します。古いWranglerでは指定した互換日が
 古いランタイムの日付へフォールバックする場合があります。
 D1対応は`worker`クレートの`d1`機能で有効になるため、別のDBドライバーは不要です。
 
 ```sh
-rustup target add wasm32-unknown-unknown
+export PATH="$HOME/.cargo/bin:$PWD/target/tools/bin:$PWD/node_modules/.bin:$PATH"
+rustup show
 cargo install worker-build --version 0.8.7 --locked --root target/tools
-npm install --prefix .local/tools --no-audit --no-fund wrangler@4.147.0
-export PATH="$PWD/.local/tools/node_modules/.bin:$PWD/target/tools/bin:$HOME/.cargo/bin:$PATH"
+npm ci
 wrangler d1 execute veil-vault --local --file schema.sql
-wrangler dev --local --test-scheduled
+# 次の値は公開済みのテスト専用ダミー。実環境では使わない。
+wrangler dev --local --test-scheduled --ip 127.0.0.1 \
+  --var SERVICE_ENABLED:true \
+  --var PUBLISH_TOKEN:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 ```
 
 別ターミナルから、実際の秘密情報を含まないダミー入力で確認できます。
 
 ```sh
 curl -i http://127.0.0.1:8787/api/secrets \
+  -H 'Authorization: Bearer aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
   -H 'Content-Type: text/plain; charset=utf-8' \
   --data-binary 'demo-ciphertext-only'
 # 応答のUUIDを指定。最初は200、次から404。
@@ -107,17 +116,16 @@ cargo check --locked --target wasm32-unknown-unknown
 cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
 ```
 
-HTTP/D1の統合検証は`tests/local_api.py`で実行します。
-通常の開発DBへの影響を避けるため、検証専用の新しい保存先を作成してください。
-このテストはローカルDBにダミーデータと失敗を再現するトリガーを作ります。
+HTTP/D1の統合検証は次のコマンドで実行します。
+`tests/run_local.py`が新しい保存先と独立した設定を作り、ローカルWorkerを起動・停止します。
+認証・設定不足・停止状態と、`tests/local_api.py`の並行取得・期限・異常系を検証します。
+テスト用のダミーデータと障害再現トリガーを作りますが、既存DBの再利用・削除はしません。
+テスト状態とダミーの診断ログは`.local/verify-ci-*`に残します。
 
 ```sh
-mkdir -p .local
-test_state=$(mktemp -d "$PWD/.local/verify-XXXXXXXX")
-wrangler d1 execute veil-vault --local --persist-to "$test_state" --file schema.sql
-wrangler dev --local --test-scheduled --persist-to "$test_state" --port 8787
-# 別ターミナルで、上の test_state と同じパスを指定。
-python3 tests/local_api.py --persist-to /absolute/path/to/test_state
+worker-build --release
+python3 -m unittest discover -s tests -p 'test_*.py'
+npm run test:local
 ```
 
 ## 公開・費用
@@ -129,9 +137,15 @@ Workers側の制限も含め、利用量と最新料金を確認してくださ�
 [D1料金](https://developers.cloudflare.com/d1/platform/pricing/)、
 [Workers料金](https://developers.cloudflare.com/workers/platform/pricing/)を参照してください。
 
-`wrangler.toml`のDB IDはプレースホルダーです。
-`workers.dev`・プレビューURLは無効で、公開ルートや自動デプロイは設定していません。
-ドメイン購入、リモートDB作成・スキーマ適用、デプロイはこの初期実装とは別の承認工程です。
+`wrangler.toml`はローカル用です。本番は`wrangler.production.toml`に分離し、
+`api.veil-s.com`のCustom Domain設定を含めています。両方とも初期状態はAPI停止です。
+DB IDは仮のため、本番デプロイの事前検証で拒否されます。
+GitHub Actionsはmainの検証後にデプロイする構成ですが、
+`PRODUCTION_DEPLOY_ENABLED=true`の明示的な有効化まではデプロイしません。
+リモートDB作成・スキーマ適用、トークン登録、DNS/Custom Domain変更、デプロイは未実施です。
+
+公開の順序と停止・復旧は[運用手順](docs/OPERATIONS.md)、
+保証の範囲と未対応の脅威は[セキュリティモデル](docs/SECURITY_MODEL.md)を参照してください。
 
 仕様の根拠:
 [Workers Rust](https://developers.cloudflare.com/workers/languages/rust/)、
