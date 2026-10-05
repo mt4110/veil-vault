@@ -1,6 +1,6 @@
 # 公開準備と運用手順
 
-更新日: 2026-10-05。専用D1とGitHub環境を準備済み。Workerのデプロイは未実施。
+更新日: 2026-10-05。GitHub Actionsから初回デプロイ済み。APIは停止状態。
 
 初期運用は、送信者を限定したCLI向けの試用とする。匿名投稿サービスや一般向けの
 共有画面は対象にしない。OSの保守はCloudflareに委ねるが、アプリの更新、利用量、
@@ -10,19 +10,38 @@
 
 - D1 `veil-vault`を作成し、空DBへ`schema.sql`を適用済み。テーブルとインデックスを
   リモートで確認し、本番設定へDB IDを反映した。
-- `veil-s.com`のNSとSOAはCloudflareへ委任済み。DNSレコードは0件で、
-  `api.veil-s.com`のCustom Domainは未作成。
+- `veil-s.com`のNSとSOAはCloudflareへ委任済み。
+  `api.veil-s.com`のCustom Domainを初回デプロイで作成した。
 - GitHub `production`環境はmainブランチのみ許可し、`mt4110`の承認を必須にした。
   1人で運用するため本人による承認を許可するが、管理者による承認の迂回は無効。
 - 環境Secret `CLOUDFLARE_ACCOUNT_ID`は登録済み。リポジトリVariable
   `PRODUCTION_DEPLOY_ENABLED=false`で継続デプロイは停止中。
 - `CLOUDFLARE_API_TOKEN`は本人が作成・登録済み。Secret名と登録日時だけを確認した。
-  Workerが未作成なので`PUBLISH_TOKEN`は初回の停止状態デプロイ後に登録する。
+  `PUBLISH_TOKEN`は未登録。
+- mainはPRとGitHub Actionsの`verify`成功を必須とし、管理者の迂回、強制Push、
+  ブランチ削除を禁止した。1人運用のためPRの第三者レビュー人数は0とし、
+  本番への反映は`production`環境で本人が承認する。
+- コミット`578240bfd035e2b59cb8d9c92f3772526b8ad9be`のCIとデプロイが成功。
+  [初回実行](https://github.com/mt4110/veil-vault/actions/runs/37279931852)は
+  `mt4110`が`production`を承認して進めた。
+  配置バージョンは`99037380-52ff-4b7d-aebd-d36eb34619c0`。
+  Wranglerで専用D1のバインディング、`SERVICE_ENABLED=false`、fetch/scheduledハンドラを
+  確認。毎時Cronの登録をデプロイログで確認したが、実際の掃除成功は未確認。
 - WAFの`veil-vault-api-rate-limit`は有効。`/api/secrets`配下をIP単位で
   5回/10秒、超過時は10秒Blockとした。実サービスでの応答確認は初回デプロイ後に行う。
 - WAFの`veil-vault-require-https`は有効。`api.veil-s.com`への平文HTTPをBlockする。
 - Zoneの最低TLSを1.2に設定。TLS 1.3は有効で、Universal SSLはActive。
-  Custom Domain作成後の実際のTLS接続は未確認。
+  `api.veil-s.com`でTLS 1.2/1.3の接続と証明書検証が成功した。
+- Python HTTPクライアントの403/error 1010を解消するため、本人の承認後に
+  `api.veil-s.com`のHTTPSに限りBrowser Integrity Checkを無効化する構成ルール
+  `veil-vault-cli-browser-check`を適用した。
+  ルールIDは`735bf8b84baf44b4b943942a8a5d5b19`。
+  除外後のPOST/GET/HEADは停止503、平文HTTPは403、連続アクセスはWAFの429を確認した。
+  Worker応答の`no-store`、`no-referrer`、`nosniff`も確認した。
+  D1の集計SQLでレコード数0を確認したが、WorkerからのD1操作試験とは別の証拠である。
+
+送信認証・一回取得・期限境界・Cron掃除の本番試験は未実施。
+Worker secretの登録と、有効状態への設定変更を経てダミーデータで確認する。
 
 ## ローカルと本番の境界
 
